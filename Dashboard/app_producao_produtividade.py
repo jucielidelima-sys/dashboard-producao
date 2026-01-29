@@ -520,7 +520,7 @@ st.markdown("## ANÁLISE & TENDÊNCIA — Próximos meses (Dias úteis)")
 
 st.caption(
     "Projeção por Linha usando dias úteis (seg–sex). "
-    "⚠️ Não considera feriados; se quiser feriados BR, eu adapto."
+    "⚠️ Não considera feriados." 
 )
 
 # Base: usar todas as linhas selecionadas (mesmo filtro de linha) em todos os meses disponíveis
