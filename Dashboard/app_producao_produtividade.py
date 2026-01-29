@@ -618,7 +618,7 @@ st.dataframe(res, use_container_width=True)
 # =====================================================================
 st.divider()
 st.markdown("## FORECAST x PRODUÇÃO PROJETADA — JAN / FEV / MAR")
-st.caption("Comparativo por Linha: Forecast (tabela) x Produção Projetada (tendência por dias úteis). Inclui ranking.")
+st.caption("Comparativo por Linha: Forecast (tabela) x Produção Projetada (tendência por dias úteis).  ranking.")
 
 def normalize_cols(cols):
     return [str(c).strip().upper() for c in cols]
