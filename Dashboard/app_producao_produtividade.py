@@ -525,7 +525,7 @@ meses_base = st.sidebar.slider("Meses históricos para calcular tendência", 1, 
 meses_a_frente = st.sidebar.slider("Projetar quantos meses à frente", 1, 12, 3)
 
 st.markdown("## ANÁLISE & TENDÊNCIA — Próximos meses (Dias úteis)")
-st.caption("Projeção por Linha usando dias úteis (seg–sex). ⚠️ 
+st.caption("Projeção por Linha usando dias úteis (seg–sex). ⚠️ ")
 
 df_t = df[df["LINHA"].isin(linha_sel)].copy()
 df_t["MES_START"] = df_t["DATA"].apply(lambda x: month_start(pd.Timestamp(x)))
