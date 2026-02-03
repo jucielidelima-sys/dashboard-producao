@@ -53,10 +53,9 @@ st.markdown(
 def login():
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
-        from pathlib import Path
-
-logo_path = Path(__file__).parent / LOGO
-
+        logo_path = Path(_file_).parent / LOGO
+        if logo_path.exists():
+            st.image(str(logo_path), use_container_width=True)
 
         st.caption("Acesso restrito")
         senha = st.text_input("Senha", type="password")
