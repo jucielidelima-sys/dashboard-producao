@@ -4,13 +4,9 @@ import plotly.graph_objects as go
 from pathlib import Path
 import numpy as np
 import urllib.parse
-from datetime import date
 
 # =========================
-# V33 — Completo:
-# Produção + Produtividade + MiniTabela (Eficiência) +
-# Tendência/Projeção (12 meses/dias úteis) +
-# Forecast x Produzido x Faturado + DIF(FAT-FORE)
+# V34 — Completo + Ranking + DIF(PROD-FORE) + MiniTabela Compacta
 # =========================
 
 ARQUIVO_EXCEL = "PROD-PRODT.xlsx"
@@ -31,7 +27,7 @@ ORANGE_LINE = "#ffd2a8"
 
 # Forecast/Faturado
 FORE_BAR = "#2f2f2f"
-FAT_BAR = "#ff8f00"  # outro tom de laranja (não igual ao Produzido)
+FAT_BAR = "#ff8f00"  # tom diferente do Produzido
 
 GREEN = "#00c853"
 RED = "#ff1744"
@@ -50,14 +46,16 @@ st.markdown(
         background:#111111 !important; color:{WHITE} !important;
       }}
       .stPlotlyChart > div {{ background:{BG} !important; }}
-      .block-container {{ padding-top: 1rem; }}
+
+      /* ajuda a caber mini tabela abaixo do gráfico */
+      .block-container {{ padding-top: 0.8rem; padding-bottom: 1rem; }}
     </style>
     """,
     unsafe_allow_html=True
 )
 
 # =========================
-# LOGIN SIMPLES (sem secrets.toml)
+# LOGIN SIMPLES
 # =========================
 def login():
     c1, c2, c3 = st.columns([1, 2, 1])
@@ -91,11 +89,9 @@ def to_number(series: pd.Series) -> pd.Series:
     s = s.str.replace("\u00a0", "", regex=False)
     s = s.str.replace(" ", "", regex=False)
 
-    # "1.234,56" -> "1234.56"
     mask = s.str.contains(",", na=False) & s.str.contains(r"\.", na=False)
     s.loc[mask] = s.loc[mask].str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
 
-    # "123,45" -> "123.45"
     mask2 = s.str.contains(",", na=False) & ~s.str.contains(r"\.", na=False)
     s.loc[mask2] = s.loc[mask2].str.replace(",", ".", regex=False)
 
@@ -108,18 +104,18 @@ def month_label(ts: pd.Timestamp) -> str:
     return ts.strftime("%m/%Y")
 
 def business_days_in_month(ts: pd.Timestamp) -> int:
-    """Dias úteis seg-sex ."""
     start = pd.Timestamp(year=ts.year, month=ts.month, day=1)
     end = (start + pd.offsets.MonthEnd(1))
     return len(pd.bdate_range(start, end))
 
 def style_dark(fig: go.Figure) -> go.Figure:
+    # margem menor para sobrar espaço da mini tabela
     fig.update_layout(
         plot_bgcolor=BG,
         paper_bgcolor=BG,
         font=dict(color=WHITE),
-        margin=dict(l=10, r=70, t=55, b=25),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.22, xanchor="left", x=0),
+        margin=dict(l=10, r=70, t=50, b=18),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.18, xanchor="left", x=0),
     )
     fig.update_yaxes(showgrid=True, gridcolor=GRID, zeroline=False)
     fig.update_xaxes(showgrid=False)
@@ -159,7 +155,6 @@ def add_gradient_bars(fig: go.Figure, x, y, name="Produção"):
         marker=dict(color=ORANGE_BAR_DARK, line=dict(color="#000000", width=0.25)),
         opacity=0.95
     ))
-    # overlay (gradiente)
     y2 = [float(v) * 0.78 if pd.notna(v) else 0 for v in y]
     fig.add_trace(go.Bar(
         x=x, y=y2, name="",
@@ -170,11 +165,16 @@ def add_gradient_bars(fig: go.Figure, x, y, name="Produção"):
     ))
 
 def render_minitabela_html(dias, meta_list, real_list, dif_list, decimals=0):
+    """
+    Mini tabela compacta:
+    - Fonte menor
+    - Padding menor
+    - Scroll horizontal se precisar
+    """
     meta_s = pd.Series(meta_list, dtype="float").fillna(0)
     real_s = pd.Series(real_list, dtype="float").fillna(0)
     dif_s  = pd.Series(dif_list,  dtype="float").fillna(0)
 
-    # Eficiência (%) = Real/Meta * 100
     eff = np.where(meta_s.values != 0, (real_s.values / meta_s.values) * 100.0, np.nan)
     eff_s = pd.Series(eff).fillna(0)
 
@@ -205,17 +205,22 @@ def render_minitabela_html(dias, meta_list, real_list, dif_list, decimals=0):
 
     css = f"""
     <style>
-      .mini-wrap {{ background:{BG}; padding:8px 0; }}
+      .mini-wrap {{
+        background:{BG};
+        padding:6px 0;
+        overflow-x:auto;
+      }}
       table.mini {{
-        width:100%;
         border-collapse:collapse;
         background:{BG};
         color:{WHITE};
-        font-size:12px;
+        font-size:10px; /* menor */
+        width:max-content; /* não estoura */
+        min-width:100%;
       }}
       table.mini th, table.mini td {{
         border:0.5px solid {BORDER};
-        padding:6px 6px;
+        padding:3px 4px; /* menor */
         text-align:center;
         background:{BG};
         color:{WHITE};
@@ -231,13 +236,14 @@ def render_minitabela_html(dias, meta_list, real_list, dif_list, decimals=0):
         color:{WHITE};
         font-weight:700;
         text-align:left;
-        padding-left:10px;
+        padding-left:8px;
+        min-width:90px;
       }}
       .thermo {{
         display:inline-block;
-        width:12px; height:12px;
+        width:10px; height:10px;
         border-radius:3px;
-        margin-right:6px;
+        margin-right:5px;
         border:1px solid #000;
         vertical-align:middle;
       }}
@@ -291,6 +297,46 @@ def load_sheets(mtime_key: float):
     df_faturado = pd.read_excel(path, sheet_name=faturado_sheet) if faturado_sheet else pd.DataFrame()
 
     return df_base, df_forecast, df_faturado, base_sheet, forecast_sheet, faturado_sheet
+
+def month_cols(df_in, prefix):
+    cols = []
+    for c in df_in.columns:
+        cu = str(c).upper().replace(" ", "")
+        if cu.startswith(prefix):
+            cols.append(c)
+    return cols
+
+def extract_month_tag(colname):
+    cu = str(colname).upper().replace(" ", "")
+    parts = cu.split(".")
+    if len(parts) >= 2:
+        return parts[1]
+    return cu
+
+def sum_months(df_in, prefix, months_selected, out_col):
+    if df_in.empty or "LINHA" not in df_in.columns:
+        return pd.DataFrame(columns=["LINHA", out_col])
+
+    work = df_in.copy()
+    work["LINHA"] = work["LINHA"].astype(str).str.strip()
+
+    cols_to_sum = []
+    for c in work.columns:
+        cu = str(c).upper().replace(" ", "")
+        if cu.startswith(prefix):
+            tag = extract_month_tag(c)
+            if tag in months_selected:
+                cols_to_sum.append(c)
+
+    if not cols_to_sum:
+        return pd.DataFrame(columns=["LINHA", out_col])
+
+    for c in cols_to_sum:
+        work[c] = to_number(work[c])
+
+    out = work.groupby("LINHA", as_index=False)[cols_to_sum].sum(numeric_only=True)
+    out[out_col] = out[cols_to_sum].sum(axis=1)
+    return out[["LINHA", out_col]]
 
 # =========================
 # CARREGAR EXCEL
@@ -376,15 +422,12 @@ mostrar_termometro = st.sidebar.checkbox("Mostrar termômetro (MELHOR)", value=T
 # =========================
 df_f["DIA_ORD"] = df_f["DATA"].dt.normalize()
 
-# Produção: soma
 agg_prod = (
     df_f.groupby("DIA_ORD", as_index=False)
         .agg({"META": "sum", "PRODUÇÃO": "sum"})
         .sort_values("DIA_ORD")
 )
 
-# Produtividade diária: Produção_total / Efetivo_total
-# Meta Prodt: ponderada por efetivo usando M. PRODT, se existir
 def _agg_prodt_day(g: pd.DataFrame) -> pd.Series:
     prod_total = pd.to_numeric(g["PRODUÇÃO"], errors="coerce").fillna(0).sum()
     efet_total = pd.to_numeric(g["EFETIVO"], errors="coerce").fillna(0).sum()
@@ -411,7 +454,6 @@ agg = agg_prod.merge(agg_prodt, on="DIA_ORD", how="left")
 agg["DIA_TXT"] = pd.to_datetime(agg["DIA_ORD"]).dt.strftime("%d/%m")
 x_order = agg["DIA_TXT"].tolist()
 
-# Diferenças corretas: Real - Meta
 agg["DIF_PROD"] = pd.to_numeric(agg["PRODUÇÃO"], errors="coerce").fillna(0) - pd.to_numeric(agg["META"], errors="coerce").fillna(0)
 
 if agg["PRODT_META"].notna().any():
@@ -422,7 +464,7 @@ else:
 agg["DIF_PRODT"] = (pd.to_numeric(agg["PRODT_REAL"], errors="coerce") - pd.to_numeric(agg["META_PRODT"], errors="coerce")).fillna(0)
 
 # =========================
-# 1) PRODUÇÃO (MÊS)
+# 1) PRODUÇÃO
 # =========================
 st.markdown(f"## PRODUÇÃO — {mes_sel}")
 
@@ -453,27 +495,13 @@ pad = max(10.0, (dmax - dmin) * 0.15) if (dmax - dmin) != 0 else 50.0
 
 fig_prod.update_layout(
     barmode="overlay",
-    height=520,
-    xaxis=dict(
-        type="category",
-        categoryorder="array",
-        categoryarray=x_order,
-        tickmode="array",
-        tickvals=x_order,
-        ticktext=x_order,
-        showgrid=False
-    ),
-    yaxis2=dict(
-        title="Diferença",
-        overlaying="y",
-        side="right",
-        showgrid=False,
-        range=[dmin - pad, dmax + pad]
-    )
+    height=480,
+    xaxis=dict(type="category", categoryorder="array", categoryarray=x_order, tickmode="array", tickvals=x_order, ticktext=x_order),
+    yaxis2=dict(title="Diferença", overlaying="y", side="right", showgrid=False, range=[dmin - pad, dmax + pad])
 )
 
 if mostrar_termometro:
-    add_termometro(fig_prod, 520)
+    add_termometro(fig_prod, 480)
 
 st.plotly_chart(style_dark(fig_prod), use_container_width=True)
 
@@ -489,7 +517,7 @@ if mostrar_minitabela:
 st.divider()
 
 # =========================
-# 2) PRODUTIVIDADE (MÊS)
+# 2) PRODUTIVIDADE
 # =========================
 st.markdown(f"## PRODUTIVIDADE — {mes_sel}")
 
@@ -523,27 +551,13 @@ dmax2 = float(pd.to_numeric(agg["DIF_PRODT"], errors="coerce").max())
 pad2 = max(0.1, (dmax2 - dmin2) * 0.15) if (dmax2 - dmin2) != 0 else 1.0
 
 fig_prodt.update_layout(
-    height=460,
-    xaxis=dict(
-        type="category",
-        categoryorder="array",
-        categoryarray=x_order,
-        tickmode="array",
-        tickvals=x_order,
-        ticktext=x_order,
-        showgrid=False
-    ),
-    yaxis2=dict(
-        title="Diferença",
-        overlaying="y",
-        side="right",
-        showgrid=False,
-        range=[dmin2 - pad2, dmax2 + pad2]
-    )
+    height=440,
+    xaxis=dict(type="category", categoryorder="array", categoryarray=x_order, tickmode="array", tickvals=x_order, ticktext=x_order),
+    yaxis2=dict(title="Diferença", overlaying="y", side="right", showgrid=False, range=[dmin2 - pad2, dmax2 + pad2])
 )
 
 if mostrar_termometro:
-    add_termometro(fig_prodt, 460)
+    add_termometro(fig_prodt, 440)
 
 st.plotly_chart(style_dark(fig_prodt), use_container_width=True)
 
@@ -559,16 +573,15 @@ if mostrar_minitabela:
 st.divider()
 
 # =========================
-# 3) ANÁLISE & TENDÊNCIA (12 meses / DIAS ÚTEIS) — RETORNOU
+# 3) ANÁLISE & TENDÊNCIA (12 meses / DIAS ÚTEIS)
 # =========================
 st.sidebar.header("Análise — Tendência (meses seguintes)")
 meses_base = st.sidebar.slider("Meses históricos para calcular tendência", 1, 12, 12)
 meses_a_frente = st.sidebar.slider("Projetar quantos meses à frente", 1, 12, 3)
 
 st.markdown("## ANÁLISE & TENDÊNCIA — Próximos meses (Dias úteis)")
-st.caption("Projeção por Linha usando dias úteis (seg–sex). ⚠️ ")
+st.caption("Projeção por Linha usando dias úteis (seg–sex). ⚠️ Não considera feriados.")
 
-# Base: usar linhas selecionadas em todos os meses disponíveis
 df_t = df[df["LINHA"].isin(linha_sel)].copy()
 df_t["MES_START"] = df_t["DATA"].apply(lambda x: month_start(pd.Timestamp(x)))
 
@@ -624,7 +637,6 @@ proj_l = proj[proj["LINHA"] == linha_tend].sort_values("MES_START")
 
 fig_t_prod = go.Figure()
 add_gradient_bars(fig_t_prod, hist_l["MES_TXT"], hist_l["PRODUÇÃO"], name="Produção (Hist)")
-
 fig_t_prod.add_trace(go.Bar(
     x=proj_l["MES_TXT"],
     y=proj_l["PROD_PROJ"],
@@ -632,8 +644,7 @@ fig_t_prod.add_trace(go.Bar(
     marker=dict(color="#444444", line=dict(color="#000000", width=0.2)),
     opacity=0.85
 ))
-
-fig_t_prod.update_layout(height=430, barmode="group", xaxis=dict(type="category"))
+fig_t_prod.update_layout(height=420, barmode="group", xaxis=dict(type="category"))
 st.plotly_chart(style_dark(fig_t_prod), use_container_width=True)
 
 st.markdown("### Tendência de Produtividade por Linha — Histórico mensal + Projeção")
@@ -654,7 +665,7 @@ fig_t_prodt.add_trace(go.Scatter(
     line=dict(color="#aaaaaa", width=1.0, dash="dot"),
     marker=dict(color="#aaaaaa", size=5),
 ))
-fig_t_prodt.update_layout(height=380, xaxis=dict(type="category"))
+fig_t_prodt.update_layout(height=360, xaxis=dict(type="category"))
 st.plotly_chart(style_dark(fig_t_prodt), use_container_width=True)
 
 st.markdown("### Resumo da Projeção (por dias úteis)")
@@ -666,7 +677,7 @@ st.dataframe(res, use_container_width=True)
 st.divider()
 
 # =========================
-# 4) FORECAST x PRODUZIDO x FATURADO
+# 4) FORECAST × PRODUZIDO × FATURADO + Tabelas DIF + RANKINGS
 # =========================
 st.markdown("## FORECAST × PRODUZIDO × FATURADO (Ranking por Linha)")
 
@@ -682,21 +693,6 @@ if not df_forecast.empty:
 if not df_faturado.empty:
     df_faturado.columns = [norm_col(c) for c in df_faturado.columns]
 
-def month_cols(df_in, prefix):
-    cols = []
-    for c in df_in.columns:
-        cu = c.upper().replace(" ", "")
-        if cu.startswith(prefix):
-            cols.append(c)
-    return cols
-
-def extract_month_tag(colname):
-    cu = colname.upper().replace(" ", "")
-    parts = cu.split(".")
-    if len(parts) >= 2:
-        return parts[1]
-    return cu
-
 forecast_cols = month_cols(df_forecast, "FOR.") if (not df_forecast.empty and "LINHA" in df_forecast.columns) else []
 faturado_cols = month_cols(df_faturado, "FAT.") if (not df_faturado.empty and "LINHA" in df_faturado.columns) else []
 month_tags = sorted(list({extract_month_tag(c) for c in forecast_cols + faturado_cols}))
@@ -711,49 +707,22 @@ else:
         default=[m for m in ["JAN", "FEV", "MAR"] if m in month_tags] or month_tags[:1]
     )
 
-    def sum_months(df_in, prefix, months_selected, out_col):
-        if df_in.empty or "LINHA" not in df_in.columns:
-            return pd.DataFrame(columns=["LINHA", out_col])
-
-        work = df_in.copy()
-        work["LINHA"] = work["LINHA"].astype(str).str.strip()
-
-        cols_to_sum = []
-        for c in work.columns:
-            cu = c.upper().replace(" ", "")
-            if cu.startswith(prefix):
-                tag = extract_month_tag(c)
-                if tag in months_selected:
-                    cols_to_sum.append(c)
-
-        if not cols_to_sum:
-            return pd.DataFrame(columns=["LINHA", out_col])
-
-        for c in cols_to_sum:
-            work[c] = to_number(work[c])
-
-        out = work.groupby("LINHA", as_index=False)[cols_to_sum].sum(numeric_only=True)
-        out[out_col] = out[cols_to_sum].sum(axis=1)
-        return out[["LINHA", out_col]]
-
-    forecast_sum = sum_months(df_forecast, "FOR.", meses_comp, "FORECAST") if (not df_forecast.empty and "LINHA" in df_forecast.columns) else pd.DataFrame(columns=["LINHA","FORECAST"])
-    faturado_sum = sum_months(df_faturado, "FAT.", meses_comp, "FATURADO") if (not df_faturado.empty and "LINHA" in df_faturado.columns) else pd.DataFrame(columns=["LINHA","FATURADO"])
+    forecast_sum = sum_months(df_forecast, "FOR.", meses_comp, "FORECAST")
+    faturado_sum = sum_months(df_faturado, "FAT.", meses_comp, "FATURADO")
 
     comp = produzido.merge(forecast_sum, on="LINHA", how="outer").merge(faturado_sum, on="LINHA", how="outer")
     comp["PRODUZIDO"] = pd.to_numeric(comp.get("PRODUZIDO", 0), errors="coerce").fillna(0)
     comp["FORECAST"] = pd.to_numeric(comp.get("FORECAST", 0), errors="coerce").fillna(0)
     comp["FATURADO"] = pd.to_numeric(comp.get("FATURADO", 0), errors="coerce").fillna(0)
 
-    # manter só linhas selecionadas no filtro do app
     comp = comp[comp["LINHA"].isin(linha_sel)].copy()
-
     comp["DIF (PROD − FORE)"] = comp["PRODUZIDO"] - comp["FORECAST"]
     comp["DIF (FAT − FORE)"] = comp["FATURADO"] - comp["FORECAST"]
-    comp = comp.sort_values("FORECAST", ascending=False)
 
     if comp.empty:
         st.info("Sem dados suficientes para montar o comparativo.")
     else:
+        # Gráfico comparativo
         fig_comp = go.Figure()
         fig_comp.add_trace(go.Bar(
             x=comp["LINHA"], y=comp["FORECAST"],
@@ -776,12 +745,8 @@ else:
         fig_comp.update_layout(height=520, barmode="group", xaxis=dict(type="category", tickangle=-15))
         st.plotly_chart(style_dark(fig_comp), use_container_width=True)
 
-        # Tabela DIF(FAT-FORE) com termômetro
-        st.markdown("### Tabela — DIF (FAT − FORE)")
-        view2 = comp[["LINHA", "FORECAST", "FATURADO", "DIF (FAT − FORE)"]].copy()
-        view2["FORECAST"] = view2["FORECAST"].round(0).astype("Int64")
-        view2["FATURADO"] = view2["FATURADO"].round(0).astype("Int64")
-        view2["DIF (FAT − FORE)"] = view2["DIF (FAT − FORE)"].round(0).astype("Int64")
+        # ===== TABELAS DIF =====
+        st.markdown("### Tabelas de Diferença (com termômetro)")
 
         def thermo_cell(v):
             try:
@@ -790,29 +755,69 @@ else:
                 vv = 0.0
             return "🟩 ↑" if vv >= 0 else "🟥 ↓"
 
-        view2["TERMÔMETRO"] = view2["DIF (FAT − FORE)"].apply(thermo_cell)
-
-        def style_diff_fat(s):
-            styles = []
+        def style_diff(s):
+            out = []
             for v in s:
                 try:
                     vv = float(v)
                 except:
                     vv = 0.0
-                styles.append(
+                out.append(
                     f"background-color:{GREEN}; color:{WHITE}; font-weight:700;"
                     if vv >= 0 else
                     f"background-color:{RED}; color:{WHITE}; font-weight:700;"
                 )
-            return styles
+            return out
 
-        sty = (
-            view2.style
-            .apply(style_diff_fat, subset=["DIF (FAT − FORE)"])
-            .set_table_styles([
-                {"selector": "th", "props": [("background-color", BG), ("color", WHITE), ("font-weight", "700")]},
-                {"selector": "td", "props": [("background-color", BG), ("color", WHITE)]},
-                {"selector": "table", "props": [("background-color", BG), ("color", WHITE)]},
-            ])
-        )
-        st.dataframe(sty, use_container_width=True)
+        cA, cB = st.columns(2)
+
+        with cA:
+            st.markdown("**DIF (PROD − FORE)**")
+            t_prod = comp[["LINHA", "FORECAST", "PRODUZIDO", "DIF (PROD − FORE)"]].copy()
+            for col in ["FORECAST", "PRODUZIDO", "DIF (PROD − FORE)"]:
+                t_prod[col] = pd.to_numeric(t_prod[col], errors="coerce").fillna(0).round(0).astype("Int64")
+            t_prod["TERMÔMETRO"] = t_prod["DIF (PROD − FORE)"].apply(thermo_cell)
+            st.dataframe(
+                t_prod.style.apply(style_diff, subset=["DIF (PROD − FORE)"]).set_table_styles([
+                    {"selector":"th","props":[("background-color",BG),("color",WHITE),("font-weight","700")]},
+                    {"selector":"td","props":[("background-color",BG),("color",WHITE)]},
+                    {"selector":"table","props":[("background-color",BG),("color",WHITE)]},
+                ]),
+                use_container_width=True
+            )
+
+        with cB:
+            st.markdown("**DIF (FAT − FORE)**")
+            t_fat = comp[["LINHA", "FORECAST", "FATURADO", "DIF (FAT − FORE)"]].copy()
+            for col in ["FORECAST", "FATURADO", "DIF (FAT − FORE)"]:
+                t_fat[col] = pd.to_numeric(t_fat[col], errors="coerce").fillna(0).round(0).astype("Int64")
+            t_fat["TERMÔMETRO"] = t_fat["DIF (FAT − FORE)"].apply(thermo_cell)
+            st.dataframe(
+                t_fat.style.apply(style_diff, subset=["DIF (FAT − FORE)"]).set_table_styles([
+                    {"selector":"th","props":[("background-color",BG),("color",WHITE),("font-weight","700")]},
+                    {"selector":"td","props":[("background-color",BG),("color",WHITE)]},
+                    {"selector":"table","props":[("background-color",BG),("color",WHITE)]},
+                ]),
+                use_container_width=True
+            )
+
+        # ===== RANKINGS TOP 5 =====
+        st.markdown("### Top 5 (melhor) e Top 5 (pior)")
+
+        def top5_block(df_in, col_diff, title):
+            base = df_in[["LINHA", "FORECAST", "PRODUZIDO", "FATURADO", col_diff]].copy()
+            base = base.sort_values(col_diff, ascending=False)
+
+            top = base.head(5).copy()
+            bottom = base.tail(5).sort_values(col_diff, ascending=True).copy()
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(f"**Top 5 — {title} (melhor)**")
+                st.dataframe(top, use_container_width=True)
+            with c2:
+                st.markdown(f"**Top 5 — {title} (pior)**")
+                st.dataframe(bottom, use_container_width=True)
+
+        top5_block(comp, "DIF (PROD − FORE)", "Produzido − Forecast")
+        top5_block(comp, "DIF (FAT − FORE)", "Faturado − Forecast")
