@@ -108,7 +108,7 @@ def month_label(ts: pd.Timestamp) -> str:
     return ts.strftime("%m/%Y")
 
 def business_days_in_month(ts: pd.Timestamp) -> int:
-    """Dias úteis seg-sex (não considera feriados)."""
+    """Dias úteis seg-sex ."""
     start = pd.Timestamp(year=ts.year, month=ts.month, day=1)
     end = (start + pd.offsets.MonthEnd(1))
     return len(pd.bdate_range(start, end))
