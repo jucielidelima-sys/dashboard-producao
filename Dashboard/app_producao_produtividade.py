@@ -7,7 +7,7 @@ import urllib.parse
 from datetime import date
 
 # =========================
-# V30 — Produção + Produtividade + Tendência (meses seguintes / dias úteis)
+# V30 + FORECAST (JAN/FEV/MAR) + RANKING
 # =========================
 
 ARQUIVO_EXCEL = "PROD-PRODT.xlsx"
@@ -53,7 +53,7 @@ st.markdown(
 def login():
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
-        logo_path = Path(_file_).parent / LOGO
+        logo_path = Path(__file__).parent / LOGO
         if logo_path.exists():
             st.image(str(logo_path), use_container_width=True)
 
@@ -237,10 +237,10 @@ def render_minitabela_html(dias, meta_list, real_list, dif_list, decimals=0):
 # =========================
 @st.cache_data(show_spinner=False)
 def load_data(mtime_key: float) -> pd.DataFrame:
-    path = Path(_file_).parent / ARQUIVO_EXCEL
+    path = Path(__file__).parent / ARQUIVO_EXCEL
     return pd.read_excel(path)
 
-excel_path = Path(_file_).parent / ARQUIVO_EXCEL
+excel_path = Path(__file__).parent / ARQUIVO_EXCEL
 if not excel_path.exists():
     st.error(f"Não encontrei '{ARQUIVO_EXCEL}' na pasta do app.")
     st.stop()
@@ -274,7 +274,7 @@ if "M. PRODT" in df.columns:
 # =========================
 # TOPO (só logo)
 # =========================
-logo_path = Path(_file_).parent / LOGO
+logo_path = Path(__file__).parent / LOGO
 if logo_path.exists():
     st.image(str(logo_path), width=170)
 
@@ -297,12 +297,17 @@ linha_sel = st.sidebar.multiselect("Linha", linhas, default=linhas)
 df_m = df_m[df_m["LINHA"].isin(linha_sel)].copy()
 if df_m.empty:
     st.warning("Sem dados para as linhas selecionadas.")
-    stնելով
     st.stop()
 
 data_min = df_m["DATA"].min().date()
 data_max = df_m["DATA"].max().date()
-data_ini, data_fim = st.sidebar.date_input("Período", value=(data_min, data_max))
+
+periodo = st.sidebar.date_input("Período", value=(data_min, data_max))
+if isinstance(periodo, tuple) and len(periodo) == 2:
+    data_ini, data_fim = periodo
+else:
+    data_ini = data_min
+    data_fim = data_max
 
 df_f = df_m[
     (df_m["DATA"] >= pd.to_datetime(data_ini)) &
@@ -331,7 +336,6 @@ agg_prod = (
 )
 
 # Produtividade: ponderada por efetivo (Produção_total / Efetivo_total)
-# Meta Prodt: ponderada por efetivo usando M. PRODT (se existir)
 def _agg_prodt_day(g: pd.DataFrame) -> pd.Series:
     prod_total = pd.to_numeric(g["PRODUÇÃO"], errors="coerce").fillna(0).sum()
     efet_total = pd.to_numeric(g["EFETIVO"], errors="coerce").fillna(0).sum()
@@ -359,16 +363,20 @@ agg = agg_prod.merge(agg_prodt, on="DIA_ORD", how="left")
 agg["DIA_TXT"] = pd.to_datetime(agg["DIA_ORD"]).dt.strftime("%d/%m")
 x_order = agg["DIA_TXT"].tolist()
 
-agg["DIF_PROD"] = (pd.to_numeric(agg["PRODUÇÃO"], errors="coerce").fillna(0) -
-                   pd.to_numeric(agg["META"], errors="coerce").fillna(0))
+agg["DIF_PROD"] = (
+    pd.to_numeric(agg["PRODUÇÃO"], errors="coerce").fillna(0)
+    - pd.to_numeric(agg["META"], errors="coerce").fillna(0)
+)
 
 if agg["PRODT_META"].notna().any():
     agg["META_PRODT"] = agg["PRODT_META"]
 else:
     agg["META_PRODT"] = pd.to_numeric(df_f["PRODT."], errors="coerce").mean()
 
-agg["DIF_PRODT"] = (pd.to_numeric(agg["PRODT_REAL"], errors="coerce") -
-                    pd.to_numeric(agg["META_PRODT"], errors="coerce")).fillna(0)
+agg["DIF_PRODT"] = (
+    pd.to_numeric(agg["PRODT_REAL"], errors="coerce")
+    - pd.to_numeric(agg["META_PRODT"], errors="coerce")
+).fillna(0)
 
 # =========================
 # 1) PRODUÇÃO (MÊS)
@@ -517,148 +525,334 @@ meses_base = st.sidebar.slider("Meses históricos para calcular tendência", 1, 
 meses_a_frente = st.sidebar.slider("Projetar quantos meses à frente", 1, 12, 3)
 
 st.markdown("## ANÁLISE & TENDÊNCIA — Próximos meses (Dias úteis)")
+st.caption("Projeção por Linha usando dias úteis (seg–sex). ⚠️ Não considera feriados; se quiser feriados BR, eu adapto.")
 
-st.caption(
-    "Projeção por Linha usando dias úteis (seg–sex). "
-    "⚠️ Não considera feriados; se quiser feriados BR, eu adapto."
-)
-
-# Base: usar todas as linhas selecionadas (mesmo filtro de linha) em todos os meses disponíveis
 df_t = df[df["LINHA"].isin(linha_sel)].copy()
 df_t["MES_START"] = df_t["DATA"].apply(lambda x: month_start(pd.Timestamp(x)))
 
-# Consolida mensal por linha
 monthly = (
     df_t.groupby(["LINHA", "MES_START"], as_index=False)
-        .agg({
-            "PRODUÇÃO": "sum",
-            "EFETIVO": "sum"
-        })
+        .agg({"PRODUÇÃO": "sum", "EFETIVO": "sum"})
 )
 
-# Produtividade mensal realizada = produção / efetivo
 monthly["PRODT_REAL_MES"] = np.where(monthly["EFETIVO"] > 0, monthly["PRODUÇÃO"] / monthly["EFETIVO"], np.nan)
-
-# Dias úteis do mês
 monthly["DIAS_UTEIS"] = monthly["MES_START"].apply(business_days_in_month)
-
-# Produção por dia útil e Efetivo por dia útil (para projetar)
 monthly["PROD_POR_DU"] = np.where(monthly["DIAS_UTEIS"] > 0, monthly["PRODUÇÃO"] / monthly["DIAS_UTEIS"], np.nan)
 monthly["EFET_POR_DU"] = np.where(monthly["DIAS_UTEIS"] > 0, monthly["EFETIVO"] / monthly["DIAS_UTEIS"], np.nan)
 
-# Definir período base = últimos N meses existentes no dataset
 all_months_sorted = sorted(monthly["MES_START"].dropna().unique().tolist())
 if len(all_months_sorted) == 0:
     st.warning("Sem meses suficientes para tendência.")
     st.stop()
 
 base_months = all_months_sorted[-meses_base:] if len(all_months_sorted) >= meses_base else all_months_sorted
-
 base = monthly[monthly["MES_START"].isin(base_months)].copy()
 
-# Tendência por linha = média dos últimos N meses
 trend = (
     base.groupby("LINHA", as_index=False)
-        .agg({
-            "PROD_POR_DU": "mean",
-            "EFET_POR_DU": "mean",
-            "PRODT_REAL_MES": "mean"
-        })
-)
-trend = trend.rename(columns={
+        .agg({"PROD_POR_DU": "mean", "EFET_POR_DU": "mean", "PRODT_REAL_MES": "mean"})
+).rename(columns={
     "PROD_POR_DU": "TEND_PROD_POR_DU",
     "EFET_POR_DU": "TEND_EFET_POR_DU",
     "PRODT_REAL_MES": "TEND_PRODT"
 })
 
-# Meses futuros a partir do último mês do dataset
 last_month = all_months_sorted[-1]
 future_months = [(last_month + pd.offsets.MonthBegin(i)) for i in range(1, meses_a_frente + 1)]
 future = pd.DataFrame({"MES_START": future_months})
 future["DIAS_UTEIS"] = future["MES_START"].apply(business_days_in_month)
 future["MES_TXT"] = future["MES_START"].apply(month_label)
 
-# Projeção por linha e mês futuro
 proj = future.merge(trend, how="cross")
 proj["PROD_PROJ"] = proj["TEND_PROD_POR_DU"] * proj["DIAS_UTEIS"]
 proj["EFET_PROJ"] = proj["TEND_EFET_POR_DU"] * proj["DIAS_UTEIS"]
 proj["PRODT_PROJ"] = np.where(proj["EFET_PROJ"] > 0, proj["PROD_PROJ"] / proj["EFET_PROJ"], np.nan)
 
-# Histórico mensal (últimos 12 meses para visual)
 hist = monthly.copy()
 hist["MES_TXT"] = hist["MES_START"].apply(month_label)
 hist_last12 = hist[hist["MES_START"].isin(all_months_sorted[-12:])].copy()
 
-# =========================
-# GRÁFICO 3A — Produção mensal (hist + projeção) por linha
-# =========================
 st.markdown("### Tendência de Produção por Linha — Histórico mensal + Projeção")
-
 linha_tend = st.selectbox("Escolha uma linha para análise", sorted(trend["LINHA"].unique().tolist()))
-
 hist_l = hist_last12[hist_last12["LINHA"] == linha_tend].sort_values("MES_START")
 proj_l = proj[proj["LINHA"] == linha_tend].sort_values("MES_START")
 
 fig_t_prod = go.Figure()
-
-# Histórico (barras suaves)
 add_gradient_bars(fig_t_prod, hist_l["MES_TXT"], hist_l["PRODUÇÃO"], name="Produção (Hist)")
-
-# Projeção (barras)
 fig_t_prod.add_trace(go.Bar(
-    x=proj_l["MES_TXT"],
-    y=proj_l["PROD_PROJ"],
+    x=proj_l["MES_TXT"], y=proj_l["PROD_PROJ"],
     name="Produção (Proj)",
     marker=dict(color="#444444", line=dict(color="#000000", width=0.2)),
     opacity=0.85
 ))
-
-fig_t_prod.update_layout(
-    height=430,
-    barmode="group",
-    xaxis=dict(type="category", showgrid=False),
-)
-
+fig_t_prod.update_layout(height=430, barmode="group", xaxis=dict(type="category", showgrid=False))
 st.plotly_chart(style_dark(fig_t_prod), use_container_width=True)
 
-# =========================
-# GRÁFICO 3B — Produtividade mensal (hist + projeção) por linha
-# =========================
 st.markdown("### Tendência de Produtividade por Linha — Histórico mensal + Projeção")
-
 fig_t_prodt = go.Figure()
-
 fig_t_prodt.add_trace(go.Scatter(
-    x=hist_l["MES_TXT"],
-    y=hist_l["PRODT_REAL_MES"],
+    x=hist_l["MES_TXT"], y=hist_l["PRODT_REAL_MES"],
     name="Produtividade (Hist)",
     mode="lines+markers",
     line=dict(color=ORANGE_BAR_LIGHT, width=1.2),
     marker=dict(color=ORANGE_BAR_LIGHT, size=6),
 ))
-
 fig_t_prodt.add_trace(go.Scatter(
-    x=proj_l["MES_TXT"],
-    y=proj_l["PRODT_PROJ"],
+    x=proj_l["MES_TXT"], y=proj_l["PRODT_PROJ"],
     name="Produtividade (Proj)",
     mode="lines+markers",
     line=dict(color="#aaaaaa", width=1.2, dash="dot"),
     marker=dict(color="#aaaaaa", size=6),
 ))
-
-fig_t_prodt.update_layout(
-    height=380,
-    xaxis=dict(type="category", showgrid=False),
-)
-
+fig_t_prodt.update_layout(height=380, xaxis=dict(type="category", showgrid=False))
 st.plotly_chart(style_dark(fig_t_prodt), use_container_width=True)
 
-# =========================
-# TABELA DE PROJEÇÃO (compacta)
-# =========================
 st.markdown("### Resumo da Projeção (por dias úteis)")
-
 res = proj_l[["MES_TXT", "DIAS_UTEIS", "PROD_PROJ", "PRODT_PROJ"]].copy()
 res["PROD_PROJ"] = res["PROD_PROJ"].round(0).astype("Int64")
 res["PRODT_PROJ"] = res["PRODT_PROJ"].round(2)
 st.dataframe(res, use_container_width=True)
+
+# =====================================================================
+# 4) NOVO BLOCO — FORECAST x PRODUÇÃO PROJETADA — JAN/FEV/MAR + RANKING
+# =====================================================================
+st.divider()
+st.markdown("## FORECAST x PRODUÇÃO PROJETADA — JAN / FEV / MAR")
+st.caption("Comparativo por Linha: Forecast (tabela) x Produção Projetada (tendência por dias úteis). Inclui ranking.")
+
+def normalize_cols(cols):
+    return [str(c).strip().upper() for c in cols]
+
+def find_forecast_sheet(path: Path):
+    """Procura uma aba provável de forecast no mesmo Excel (se existir)."""
+    try:
+        xls = pd.ExcelFile(path)
+        for sh in xls.sheet_names:
+            up = sh.strip().upper()
+            if any(k in up for k in ["FORECAST", "FOR", "PREV", "PLANO", "VENDA"]):
+                try:
+                    tmp = pd.read_excel(path, sheet_name=sh)
+                    cols = normalize_cols(tmp.columns)
+                    if "LINHA" in cols and any("FOR" in c for c in cols):
+                        return sh
+                except:
+                    pass
+    except:
+        pass
+    return None
+
+def load_forecast_from_df(df_fc: pd.DataFrame) -> pd.DataFrame:
+    """Padroniza o forecast para formato longo: LINHA, MES_START, FORECAST."""
+    df_fc = df_fc.copy()
+    df_fc.columns = normalize_cols(df_fc.columns)
+
+    if "LINHA" not in df_fc.columns:
+        return pd.DataFrame()
+
+    # tenta achar colunas do tipo FOR. JAN / FOR. FEV / FOR. MAR etc
+    # aceitamos: "FOR. JAN", "FOR_JAN", "FOR JAN", "FOR.JAN" etc
+    month_map = {
+        "JAN": 1, "JANEIRO": 1,
+        "FEV": 2, "FEVEREIRO": 2,
+        "MAR": 3, "MARCO": 3, "MARÇO": 3,
+    }
+
+    fc_cols = []
+    for c in df_fc.columns:
+        cu = str(c).upper().replace("Ç", "C")
+        if "FOR" in cu:
+            fc_cols.append(c)
+
+    if not fc_cols:
+        return pd.DataFrame()
+
+    rows = []
+    # ano: assume o ano do último mês do dataset (mesma lógica da projeção)
+    base_year = int(pd.Timestamp(last_month).year)
+
+    for _, r in df_fc.iterrows():
+        linha = str(r.get("LINHA", "")).strip()
+        if not linha:
+            continue
+
+        for c in fc_cols:
+            cu = str(c).upper().replace("Ç", "C")
+            # pega tokens (JAN/FEV/MAR)
+            tok = None
+            for k in month_map.keys():
+                if k in cu:
+                    tok = k
+                    break
+            if not tok:
+                continue
+
+            mes_num = month_map[tok]
+            mes_start = pd.Timestamp(year=base_year, month=mes_num, day=1)
+            val = r.get(c, np.nan)
+            val = to_number(pd.Series([val])).iloc[0]
+            if pd.isna(val):
+                continue
+            rows.append({"LINHA": linha, "MES_START": mes_start, "FORECAST": float(val)})
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out = out.groupby(["LINHA", "MES_START"], as_index=False)["FORECAST"].sum()
+    return out
+
+# Sidebar: fonte do forecast
+st.sidebar.header("Forecast — Comparativo")
+modo_fc = st.sidebar.radio("Fonte do Forecast", ["Procurar no mesmo Excel", "Enviar arquivo Forecast"], index=0)
+
+df_forecast_long = pd.DataFrame()
+
+if modo_fc == "Procurar no mesmo Excel":
+    sh = find_forecast_sheet(excel_path)
+    if sh:
+        try:
+            df_fc = pd.read_excel(excel_path, sheet_name=sh)
+            df_forecast_long = load_forecast_from_df(df_fc)
+            st.sidebar.success(f"Forecast encontrado na aba: {sh}")
+        except Exception as e:
+            st.sidebar.error("Não consegui ler a aba de Forecast.")
+    else:
+        st.sidebar.warning("Não achei aba de Forecast no Excel. Selecione 'Enviar arquivo Forecast'.")
+
+else:
+    up = st.sidebar.file_uploader("Envie o Forecast (xlsx ou csv)", type=["xlsx", "csv"])
+    if up is not None:
+        try:
+            if up.name.lower().endswith(".csv"):
+                df_fc = pd.read_csv(up)
+            else:
+                df_fc = pd.read_excel(up)
+            df_forecast_long = load_forecast_from_df(df_fc)
+            st.sidebar.success("Forecast carregado do arquivo enviado.")
+        except:
+            st.sidebar.error("Não consegui ler esse arquivo de Forecast.")
+
+# Meses a comparar (JAN/FEV/MAR)
+meses_compare = st.multiselect(
+    "Meses para comparar (Forecast x Projetada)",
+    options=["01", "02", "03"],
+    default=["01", "02", "03"],
+    format_func=lambda m: {"01": "JAN", "02": "FEV", "03": "MAR"}[m]
+)
+
+if df_forecast_long.empty:
+    st.info("⚠️ Forecast não carregado. Esse bloco só aparece quando o forecast é encontrado/enviado.")
+else:
+    # filtra forecast nas linhas selecionadas
+    df_forecast_long["LINHA"] = df_forecast_long["LINHA"].astype(str).str.strip()
+    df_forecast_long = df_forecast_long[df_forecast_long["LINHA"].isin(linha_sel)].copy()
+
+    # filtra meses (jan/fev/mar)
+    df_forecast_long["MES"] = pd.to_datetime(df_forecast_long["MES_START"]).dt.month.astype(str).str.zfill(2)
+    df_forecast_long = df_forecast_long[df_forecast_long["MES"].isin(meses_compare)].copy()
+
+    # Projeção: usar proj (já calculada) e também filtrar para jan/fev/mar do ano base
+    proj_use = proj.copy()
+    proj_use["MES"] = pd.to_datetime(proj_use["MES_START"]).dt.month.astype(str).str.zfill(2)
+    proj_use = proj_use[proj_use["MES"].isin(meses_compare)].copy()
+
+    # Somar projeção por linha e mês
+    proj_month = proj_use.groupby(["LINHA", "MES_START"], as_index=False)["PROD_PROJ"].sum()
+    proj_month = proj_month.rename(columns={"PROD_PROJ": "PROJETADA"})
+
+    # Somar forecast por linha e mês
+    fc_month = df_forecast_long.groupby(["LINHA", "MES_START"], as_index=False)["FORECAST"].sum()
+
+    # Merge
+    comp = proj_month.merge(fc_month, on=["LINHA", "MES_START"], how="outer")
+    comp["PROJETADA"] = pd.to_numeric(comp["PROJETADA"], errors="coerce").fillna(0)
+    comp["FORECAST"] = pd.to_numeric(comp["FORECAST"], errors="coerce").fillna(0)
+
+    comp["DIF"] = comp["PROJETADA"] - comp["FORECAST"]
+    comp["DIF_%"] = np.where(comp["FORECAST"] != 0, (comp["DIF"] / comp["FORECAST"]) * 100, np.nan)
+
+    comp["MES_TXT"] = pd.to_datetime(comp["MES_START"]).dt.strftime("%b/%Y").str.upper()
+
+    # --- Seleção de mês para gráfico (JAN/FEV/MAR) ---
+    meses_lbl = sorted(comp["MES_TXT"].unique().tolist())
+    mes_view = st.selectbox("Visualizar mês", meses_lbl, index=0 if meses_lbl else 0)
+
+    comp_m = comp[comp["MES_TXT"] == mes_view].copy()
+    comp_m = comp_m.sort_values("FORECAST", ascending=False)
+
+    # =========================
+    # GRÁFICO — Forecast x Projetada (por linha)
+    # =========================
+    fig_fc = go.Figure()
+    fig_fc.add_trace(go.Bar(
+        x=comp_m["LINHA"],
+        y=comp_m["FORECAST"],
+        name="Forecast",
+        marker=dict(color="#5a5a5a", line=dict(color="#000000", width=0.2)),
+        opacity=0.9
+    ))
+    fig_fc.add_trace(go.Bar(
+        x=comp_m["LINHA"],
+        y=comp_m["PROJETADA"],
+        name="Produção Projetada",
+        marker=dict(color=ORANGE_BAR_DARK, line=dict(color="#000000", width=0.2)),
+        opacity=0.9
+    ))
+    fig_fc.update_layout(
+        height=460,
+        barmode="group",
+        xaxis=dict(type="category", tickangle=-25, showgrid=False),
+        yaxis=dict(title="Quantidade"),
+    )
+    st.plotly_chart(style_dark(fig_fc), use_container_width=True)
+
+    # =========================
+    # RANKING — Melhor/Pior (Diferença)
+    # =========================
+    st.markdown("### Ranking (Projetada − Forecast)")
+
+    rank = comp_m.copy()
+    rank["DIF"] = rank["DIF"].round(0)
+    rank["PROJETADA"] = rank["PROJETADA"].round(0)
+    rank["FORECAST"] = rank["FORECAST"].round(0)
+    rank["DIF_%"] = rank["DIF_%"].round(1)
+
+    # ordem: maior diferença positiva primeiro
+    rank = rank.sort_values("DIF", ascending=False)
+
+    # aplica cores na tabela (verde/vermelho) sem mudar o tema
+    def color_diff(v):
+        try:
+            v = float(v)
+        except:
+            return ""
+        return f"color: {WHITE}; background-color: {GREEN if v >= 0 else RED}; font-weight:700;"
+
+    show = rank[["LINHA", "FORECAST", "PROJETADA", "DIF", "DIF_%"]].rename(columns={
+        "LINHA": "Linha",
+        "FORECAST": "Forecast",
+        "PROJETADA": "Projetada",
+        "DIF": "Diferença",
+        "DIF_%": "Dif %"
+    })
+
+    st.dataframe(
+        show.style.applymap(color_diff, subset=["Diferença"]).format({
+            "Forecast": "{:,.0f}".format,
+            "Projetada": "{:,.0f}".format,
+            "Diferença": "{:,.0f}".format,
+            "Dif %": lambda x: "" if pd.isna(x) else f"{x:.1f}%"
+        }),
+        use_container_width=True
+    )
+
+    # Mini resumo (top 5)
+    st.markdown("#### Top 5 (melhor) e Top 5 (pior)")
+    top5 = show.head(5)
+    bot5 = show.tail(5).sort_values("Diferença")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("Top 5 — acima do forecast")
+        st.dataframe(top5, use_container_width=True, height=220)
+    with c2:
+        st.caption("Top 5 — abaixo do forecast")
+        st.dataframe(bot5, use_container_width=True, height=220)
