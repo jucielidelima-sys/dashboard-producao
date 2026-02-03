@@ -4,9 +4,13 @@ import plotly.graph_objects as go
 from pathlib import Path
 import numpy as np
 import urllib.parse
+from datetime import date
 
 # =========================
-# V32 — Produção + Produtividade + Forecast x Produzido x Faturado + Eficiência
+# V33 — Completo:
+# Produção + Produtividade + MiniTabela (Eficiência) +
+# Tendência/Projeção (12 meses/dias úteis) +
+# Forecast x Produzido x Faturado + DIF(FAT-FORE)
 # =========================
 
 ARQUIVO_EXCEL = "PROD-PRODT.xlsx"
@@ -20,12 +24,14 @@ WHITE = "#ffffff"
 GRID = "#2a2a2a"
 BORDER = "#1a2a1a"
 
-ORANGE_BAR_DARK = "#d85d00"   # Produzido (laranja base)
-ORANGE_BAR_LIGHT = "#ffb981"  # overlay (gradiente)
-ORANGE_LINE = "#ffd2a8"       # linha meta
+# Produzido
+ORANGE_BAR_DARK = "#d85d00"
+ORANGE_BAR_LIGHT = "#ffb981"
+ORANGE_LINE = "#ffd2a8"
 
-FAT_BAR = "#ff8f00"           # FATURADO (outro tom de laranja)
-FORE_BAR = "#2f2f2f"          # FORECAST (cinza escuro)
+# Forecast/Faturado
+FORE_BAR = "#2f2f2f"
+FAT_BAR = "#ff8f00"  # outro tom de laranja (não igual ao Produzido)
 
 GREEN = "#00c853"
 RED = "#ff1744"
@@ -95,6 +101,18 @@ def to_number(series: pd.Series) -> pd.Series:
 
     return pd.to_numeric(s, errors="coerce")
 
+def month_start(ts: pd.Timestamp) -> pd.Timestamp:
+    return pd.Timestamp(year=ts.year, month=ts.month, day=1)
+
+def month_label(ts: pd.Timestamp) -> str:
+    return ts.strftime("%m/%Y")
+
+def business_days_in_month(ts: pd.Timestamp) -> int:
+    """Dias úteis seg-sex (não considera feriados)."""
+    start = pd.Timestamp(year=ts.year, month=ts.month, day=1)
+    end = (start + pd.offsets.MonthEnd(1))
+    return len(pd.bdate_range(start, end))
+
 def style_dark(fig: go.Figure) -> go.Figure:
     fig.update_layout(
         plot_bgcolor=BG,
@@ -141,6 +159,7 @@ def add_gradient_bars(fig: go.Figure, x, y, name="Produção"):
         marker=dict(color=ORANGE_BAR_DARK, line=dict(color="#000000", width=0.25)),
         opacity=0.95
     ))
+    # overlay (gradiente)
     y2 = [float(v) * 0.78 if pd.notna(v) else 0 for v in y]
     fig.add_trace(go.Bar(
         x=x, y=y2, name="",
@@ -150,20 +169,19 @@ def add_gradient_bars(fig: go.Figure, x, y, name="Produção"):
         showlegend=False
     ))
 
-def render_minitabela_html(dias, meta_list, real_list, dif_list, decimals=0, show_eficiencia=True):
+def render_minitabela_html(dias, meta_list, real_list, dif_list, decimals=0):
     meta_s = pd.Series(meta_list, dtype="float").fillna(0)
     real_s = pd.Series(real_list, dtype="float").fillna(0)
     dif_s  = pd.Series(dif_list,  dtype="float").fillna(0)
 
     # Eficiência (%) = Real/Meta * 100
-    if show_eficiencia:
-        eff = np.where(meta_s.values != 0, (real_s.values / meta_s.values) * 100.0, np.nan)
-        eff_s = pd.Series(eff).fillna(0)
+    eff = np.where(meta_s.values != 0, (real_s.values / meta_s.values) * 100.0, np.nan)
+    eff_s = pd.Series(eff).fillna(0)
 
     meta_media = float(meta_s.mean()) if len(meta_s) else 0.0
     real_media = float(real_s.mean()) if len(real_s) else 0.0
     dif_media  = float(dif_s.mean())  if len(dif_s)  else 0.0
-    eff_media  = float(pd.Series(eff).mean()) if show_eficiencia and len(meta_s) else 0.0
+    eff_media  = float(pd.Series(eff).mean()) if len(meta_s) else 0.0
 
     def fmt(v):
         if decimals == 0:
@@ -179,13 +197,11 @@ def render_minitabela_html(dias, meta_list, real_list, dif_list, decimals=0, sho
     cols = dias + ["MÉDIA"]
 
     rows = [
-        ("Meta",      [fmt(v) for v in meta_s.tolist()] + [fmt(meta_media)]),
-        ("Realizado", [fmt(v) for v in real_s.tolist()] + [fmt(real_media)]),
-        ("Diferença", [fmt(v) for v in dif_s.tolist()]  + [fmt(dif_media)]),
+        ("Meta",        [fmt(v) for v in meta_s.tolist()] + [fmt(meta_media)]),
+        ("Realizado",   [fmt(v) for v in real_s.tolist()] + [fmt(real_media)]),
+        ("Diferença",   [fmt(v) for v in dif_s.tolist()]  + [fmt(dif_media)]),
+        ("Eficiência %",[fmt_pct(v) for v in eff_s.tolist()] + [fmt_pct(eff_media)]),
     ]
-
-    if show_eficiencia:
-        rows.append(("Eficiência %", [fmt_pct(v) for v in eff_s.tolist()] + [fmt_pct(eff_media)]))
 
     css = f"""
     <style>
@@ -235,7 +251,6 @@ def render_minitabela_html(dias, meta_list, real_list, dif_list, decimals=0, sho
         tds = []
         for v in values:
             if label == "Diferença":
-                # cor por sinal + termômetro
                 try:
                     vv = float(str(v).replace(",", "."))
                 except:
@@ -278,7 +293,7 @@ def load_sheets(mtime_key: float):
     return df_base, df_forecast, df_faturado, base_sheet, forecast_sheet, faturado_sheet
 
 # =========================
-# CARREGAR ARQUIVO
+# CARREGAR EXCEL
 # =========================
 excel_path = Path(__file__).parent / ARQUIVO_EXCEL
 if not excel_path.exists():
@@ -288,7 +303,7 @@ if not excel_path.exists():
 mtime = excel_path.stat().st_mtime
 df, df_forecast, df_faturado, base_sheet, forecast_sheet, faturado_sheet = load_sheets(mtime)
 
-# TOPO (só logo)
+# TOPO: só logo
 logo_path = Path(__file__).parent / LOGO
 if logo_path.exists():
     st.image(str(logo_path), width=170)
@@ -307,6 +322,7 @@ if faltando:
 
 df["DATA"] = pd.to_datetime(df["DATA"], errors="coerce")
 df = df.dropna(subset=["DATA"])
+
 df["MÊS"] = df["MÊS"].astype(str).str.strip().str.upper()
 df["LINHA"] = df["LINHA"].astype(str).str.strip()
 
@@ -356,16 +372,19 @@ mostrar_minitabela = st.sidebar.checkbox("Mostrar mini tabela", value=True)
 mostrar_termometro = st.sidebar.checkbox("Mostrar termômetro (MELHOR)", value=True)
 
 # =========================
-# AGREGAÇÃO POR DIA
+# AGREGAÇÃO POR DIA (SÓ DIAS COM DADOS)
 # =========================
 df_f["DIA_ORD"] = df_f["DATA"].dt.normalize()
 
+# Produção: soma
 agg_prod = (
     df_f.groupby("DIA_ORD", as_index=False)
         .agg({"META": "sum", "PRODUÇÃO": "sum"})
         .sort_values("DIA_ORD")
 )
 
+# Produtividade diária: Produção_total / Efetivo_total
+# Meta Prodt: ponderada por efetivo usando M. PRODT, se existir
 def _agg_prodt_day(g: pd.DataFrame) -> pd.Series:
     prod_total = pd.to_numeric(g["PRODUÇÃO"], errors="coerce").fillna(0).sum()
     efet_total = pd.to_numeric(g["EFETIVO"], errors="coerce").fillna(0).sum()
@@ -392,7 +411,7 @@ agg = agg_prod.merge(agg_prodt, on="DIA_ORD", how="left")
 agg["DIA_TXT"] = pd.to_datetime(agg["DIA_ORD"]).dt.strftime("%d/%m")
 x_order = agg["DIA_TXT"].tolist()
 
-# Diferenças corretas (Real - Meta)
+# Diferenças corretas: Real - Meta
 agg["DIF_PROD"] = pd.to_numeric(agg["PRODUÇÃO"], errors="coerce").fillna(0) - pd.to_numeric(agg["META"], errors="coerce").fillna(0)
 
 if agg["PRODT_META"].notna().any():
@@ -403,7 +422,7 @@ else:
 agg["DIF_PRODT"] = (pd.to_numeric(agg["PRODT_REAL"], errors="coerce") - pd.to_numeric(agg["META_PRODT"], errors="coerce")).fillna(0)
 
 # =========================
-# 1) PRODUÇÃO
+# 1) PRODUÇÃO (MÊS)
 # =========================
 st.markdown(f"## PRODUÇÃO — {mes_sel}")
 
@@ -435,8 +454,22 @@ pad = max(10.0, (dmax - dmin) * 0.15) if (dmax - dmin) != 0 else 50.0
 fig_prod.update_layout(
     barmode="overlay",
     height=520,
-    xaxis=dict(type="category", categoryorder="array", categoryarray=x_order, tickmode="array", tickvals=x_order, ticktext=x_order),
-    yaxis2=dict(title="Diferença", overlaying="y", side="right", showgrid=False, range=[dmin - pad, dmax + pad]),
+    xaxis=dict(
+        type="category",
+        categoryorder="array",
+        categoryarray=x_order,
+        tickmode="array",
+        tickvals=x_order,
+        ticktext=x_order,
+        showgrid=False
+    ),
+    yaxis2=dict(
+        title="Diferença",
+        overlaying="y",
+        side="right",
+        showgrid=False,
+        range=[dmin - pad, dmax + pad]
+    )
 )
 
 if mostrar_termometro:
@@ -450,14 +483,13 @@ if mostrar_minitabela:
         meta_list=pd.Series(agg["META"]).fillna(0).tolist(),
         real_list=pd.Series(agg["PRODUÇÃO"]).fillna(0).tolist(),
         dif_list=pd.Series(agg["DIF_PROD"]).fillna(0).tolist(),
-        decimals=2 if (pd.Series(agg["META"]).mean() < 50) else 0,  # mantém ok se for produtividade “parecida”
-        show_eficiencia=True
+        decimals=0
     )
 
 st.divider()
 
 # =========================
-# 2) PRODUTIVIDADE
+# 2) PRODUTIVIDADE (MÊS)
 # =========================
 st.markdown(f"## PRODUTIVIDADE — {mes_sel}")
 
@@ -492,8 +524,22 @@ pad2 = max(0.1, (dmax2 - dmin2) * 0.15) if (dmax2 - dmin2) != 0 else 1.0
 
 fig_prodt.update_layout(
     height=460,
-    xaxis=dict(type="category", categoryorder="array", categoryarray=x_order, tickmode="array", tickvals=x_order, ticktext=x_order),
-    yaxis2=dict(title="Diferença", overlaying="y", side="right", showgrid=False, range=[dmin2 - pad2, dmax2 + pad2]),
+    xaxis=dict(
+        type="category",
+        categoryorder="array",
+        categoryarray=x_order,
+        tickmode="array",
+        tickvals=x_order,
+        ticktext=x_order,
+        showgrid=False
+    ),
+    yaxis2=dict(
+        title="Diferença",
+        overlaying="y",
+        side="right",
+        showgrid=False,
+        range=[dmin2 - pad2, dmax2 + pad2]
+    )
 )
 
 if mostrar_termometro:
@@ -507,30 +553,133 @@ if mostrar_minitabela:
         meta_list=pd.Series(agg["META_PRODT"]).fillna(0).tolist(),
         real_list=pd.Series(agg["PRODT_REAL"]).fillna(0).tolist(),
         dif_list=pd.Series(agg["DIF_PRODT"]).fillna(0).tolist(),
-        decimals=2,
-        show_eficiencia=True
+        decimals=2
     )
 
 st.divider()
 
 # =========================
-# 3) FORECAST x PRODUZIDO x FATURADO
+# 3) ANÁLISE & TENDÊNCIA (12 meses / DIAS ÚTEIS) — RETORNOU
+# =========================
+st.sidebar.header("Análise — Tendência (meses seguintes)")
+meses_base = st.sidebar.slider("Meses históricos para calcular tendência", 1, 12, 12)
+meses_a_frente = st.sidebar.slider("Projetar quantos meses à frente", 1, 12, 3)
+
+st.markdown("## ANÁLISE & TENDÊNCIA — Próximos meses (Dias úteis)")
+st.caption("Projeção por Linha usando dias úteis (seg–sex). ⚠️ Não considera feriados.")
+
+# Base: usar linhas selecionadas em todos os meses disponíveis
+df_t = df[df["LINHA"].isin(linha_sel)].copy()
+df_t["MES_START"] = df_t["DATA"].apply(lambda x: month_start(pd.Timestamp(x)))
+
+monthly = (
+    df_t.groupby(["LINHA", "MES_START"], as_index=False)
+        .agg({"PRODUÇÃO": "sum", "EFETIVO": "sum"})
+)
+
+monthly["PRODT_REAL_MES"] = np.where(monthly["EFETIVO"] > 0, monthly["PRODUÇÃO"] / monthly["EFETIVO"], np.nan)
+monthly["DIAS_UTEIS"] = monthly["MES_START"].apply(business_days_in_month)
+
+monthly["PROD_POR_DU"] = np.where(monthly["DIAS_UTEIS"] > 0, monthly["PRODUÇÃO"] / monthly["DIAS_UTEIS"], np.nan)
+monthly["EFET_POR_DU"] = np.where(monthly["DIAS_UTEIS"] > 0, monthly["EFETIVO"] / monthly["DIAS_UTEIS"], np.nan)
+
+all_months_sorted = sorted(monthly["MES_START"].dropna().unique().tolist())
+if len(all_months_sorted) == 0:
+    st.warning("Sem meses suficientes para tendência.")
+    st.stop()
+
+base_months = all_months_sorted[-meses_base:] if len(all_months_sorted) >= meses_base else all_months_sorted
+base = monthly[monthly["MES_START"].isin(base_months)].copy()
+
+trend = (
+    base.groupby("LINHA", as_index=False)
+        .agg({"PROD_POR_DU": "mean", "EFET_POR_DU": "mean", "PRODT_REAL_MES": "mean"})
+        .rename(columns={
+            "PROD_POR_DU": "TEND_PROD_POR_DU",
+            "EFET_POR_DU": "TEND_EFET_POR_DU",
+            "PRODT_REAL_MES": "TEND_PRODT"
+        })
+)
+
+last_month = all_months_sorted[-1]
+future_months = [(last_month + pd.offsets.MonthBegin(i)) for i in range(1, meses_a_frente + 1)]
+future = pd.DataFrame({"MES_START": future_months})
+future["DIAS_UTEIS"] = future["MES_START"].apply(business_days_in_month)
+future["MES_TXT"] = future["MES_START"].apply(month_label)
+
+proj = future.merge(trend, how="cross")
+proj["PROD_PROJ"] = proj["TEND_PROD_POR_DU"] * proj["DIAS_UTEIS"]
+proj["EFET_PROJ"] = proj["TEND_EFET_POR_DU"] * proj["DIAS_UTEIS"]
+proj["PRODT_PROJ"] = np.where(proj["EFET_PROJ"] > 0, proj["PROD_PROJ"] / proj["EFET_PROJ"], np.nan)
+
+hist = monthly.copy()
+hist["MES_TXT"] = hist["MES_START"].apply(month_label)
+hist_last12 = hist[hist["MES_START"].isin(all_months_sorted[-12:])].copy()
+
+st.markdown("### Tendência de Produção por Linha — Histórico mensal + Projeção")
+linha_tend = st.selectbox("Escolha uma linha para análise", sorted(trend["LINHA"].unique().tolist()))
+
+hist_l = hist_last12[hist_last12["LINHA"] == linha_tend].sort_values("MES_START")
+proj_l = proj[proj["LINHA"] == linha_tend].sort_values("MES_START")
+
+fig_t_prod = go.Figure()
+add_gradient_bars(fig_t_prod, hist_l["MES_TXT"], hist_l["PRODUÇÃO"], name="Produção (Hist)")
+
+fig_t_prod.add_trace(go.Bar(
+    x=proj_l["MES_TXT"],
+    y=proj_l["PROD_PROJ"],
+    name="Produção (Proj)",
+    marker=dict(color="#444444", line=dict(color="#000000", width=0.2)),
+    opacity=0.85
+))
+
+fig_t_prod.update_layout(height=430, barmode="group", xaxis=dict(type="category"))
+st.plotly_chart(style_dark(fig_t_prod), use_container_width=True)
+
+st.markdown("### Tendência de Produtividade por Linha — Histórico mensal + Projeção")
+fig_t_prodt = go.Figure()
+fig_t_prodt.add_trace(go.Scatter(
+    x=hist_l["MES_TXT"],
+    y=hist_l["PRODT_REAL_MES"],
+    name="Produtividade (Hist)",
+    mode="lines+markers",
+    line=dict(color=ORANGE_BAR_LIGHT, width=1.0),
+    marker=dict(color=ORANGE_BAR_LIGHT, size=5),
+))
+fig_t_prodt.add_trace(go.Scatter(
+    x=proj_l["MES_TXT"],
+    y=proj_l["PRODT_PROJ"],
+    name="Produtividade (Proj)",
+    mode="lines+markers",
+    line=dict(color="#aaaaaa", width=1.0, dash="dot"),
+    marker=dict(color="#aaaaaa", size=5),
+))
+fig_t_prodt.update_layout(height=380, xaxis=dict(type="category"))
+st.plotly_chart(style_dark(fig_t_prodt), use_container_width=True)
+
+st.markdown("### Resumo da Projeção (por dias úteis)")
+res = proj_l[["MES_TXT", "DIAS_UTEIS", "PROD_PROJ", "PRODT_PROJ"]].copy()
+res["PROD_PROJ"] = res["PROD_PROJ"].round(0).astype("Int64")
+res["PRODT_PROJ"] = res["PRODT_PROJ"].round(2)
+st.dataframe(res, use_container_width=True)
+
+st.divider()
+
+# =========================
+# 4) FORECAST x PRODUZIDO x FATURADO
 # =========================
 st.markdown("## FORECAST × PRODUZIDO × FATURADO (Ranking por Linha)")
 
-# produzido = soma de produção no período filtrado (mesmo filtro do app)
+# PRODUZIDO = soma de PRODUÇÃO no período filtrado
 produzido = (
     df_f.groupby("LINHA", as_index=False)["PRODUÇÃO"]
         .sum()
         .rename(columns={"PRODUÇÃO": "PRODUZIDO"})
 )
 
-forecast_ok = not df_forecast.empty and ("LINHA" in [norm_col(c) for c in df_forecast.columns])
-faturado_ok = not df_faturado.empty and ("LINHA" in [norm_col(c) for c in df_faturado.columns])
-
-if forecast_ok:
+if not df_forecast.empty:
     df_forecast.columns = [norm_col(c) for c in df_forecast.columns]
-if faturado_ok:
+if not df_faturado.empty:
     df_faturado.columns = [norm_col(c) for c in df_faturado.columns]
 
 def month_cols(df_in, prefix):
@@ -548,126 +697,122 @@ def extract_month_tag(colname):
         return parts[1]
     return cu
 
-forecast_cols = month_cols(df_forecast, "FOR.") if forecast_ok else []
-faturado_cols = month_cols(df_faturado, "FAT.") if faturado_ok else []
+forecast_cols = month_cols(df_forecast, "FOR.") if (not df_forecast.empty and "LINHA" in df_forecast.columns) else []
+faturado_cols = month_cols(df_faturado, "FAT.") if (not df_faturado.empty and "LINHA" in df_faturado.columns) else []
 month_tags = sorted(list({extract_month_tag(c) for c in forecast_cols + faturado_cols}))
 
 if not month_tags:
     st.info("Não encontrei colunas FOR.JAN / FAT.JAN nas abas FORECAST/FATURADO.")
-    st.stop()
-
-st.sidebar.header("Comparativo — Forecast/Faturado")
-meses_comp = st.sidebar.multiselect(
-    "Meses para comparar (FORECAST/FATURADO)",
-    options=month_tags,
-    default=[m for m in ["JAN", "FEV", "MAR"] if m in month_tags] or month_tags[:1]
-)
-
-def sum_months(df_in, prefix, months_selected, out_col):
-    if df_in.empty or "LINHA" not in df_in.columns:
-        return pd.DataFrame(columns=["LINHA", out_col])
-
-    work = df_in.copy()
-    work["LINHA"] = work["LINHA"].astype(str).str.strip()
-
-    cols_to_sum = []
-    for c in work.columns:
-        cu = c.upper().replace(" ", "")
-        if cu.startswith(prefix):
-            tag = extract_month_tag(c)
-            if tag in months_selected:
-                cols_to_sum.append(c)
-
-    if not cols_to_sum:
-        return pd.DataFrame(columns=["LINHA", out_col])
-
-    for c in cols_to_sum:
-        work[c] = to_number(work[c])
-
-    out = work.groupby("LINHA", as_index=False)[cols_to_sum].sum(numeric_only=True)
-    out[out_col] = out[cols_to_sum].sum(axis=1)
-    return out[["LINHA", out_col]]
-
-forecast_sum = sum_months(df_forecast, "FOR.", meses_comp, "FORECAST") if forecast_ok else pd.DataFrame(columns=["LINHA", "FORECAST"])
-faturado_sum = sum_months(df_faturado, "FAT.", meses_comp, "FATURADO") if faturado_ok else pd.DataFrame(columns=["LINHA", "FATURADO"])
-
-comp = produzido.merge(forecast_sum, on="LINHA", how="outer").merge(faturado_sum, on="LINHA", how="outer")
-comp["PRODUZIDO"] = pd.to_numeric(comp.get("PRODUZIDO", 0), errors="coerce").fillna(0)
-comp["FORECAST"] = pd.to_numeric(comp.get("FORECAST", 0), errors="coerce").fillna(0)
-comp["FATURADO"] = pd.to_numeric(comp.get("FATURADO", 0), errors="coerce").fillna(0)
-
-# manter apenas linhas selecionadas
-comp = comp[comp["LINHA"].isin(linha_sel)].copy()
-
-# diferenças
-comp["DIF (PROD − FORE)"] = comp["PRODUZIDO"] - comp["FORECAST"]
-comp["DIF (FAT − FORE)"] = comp["FATURADO"] - comp["FORECAST"]
-
-comp = comp.sort_values("FORECAST", ascending=False)
-
-if comp.empty:
-    st.info("Sem dados suficientes para montar o comparativo Forecast x Produzido x Faturado.")
 else:
-    # gráfico barras
-    fig_comp = go.Figure()
-    fig_comp.add_trace(go.Bar(
-        x=comp["LINHA"], y=comp["FORECAST"],
-        name="Forecast",
-        marker=dict(color=FORE_BAR, line=dict(color="#000000", width=0.2)),
-        opacity=0.95
-    ))
-    fig_comp.add_trace(go.Bar(
-        x=comp["LINHA"], y=comp["PRODUZIDO"],
-        name="Produzido",
-        marker=dict(color=ORANGE_BAR_DARK, line=dict(color="#000000", width=0.2)),
-        opacity=0.95
-    ))
-    fig_comp.add_trace(go.Bar(
-        x=comp["LINHA"], y=comp["FATURADO"],
-        name="Faturado",
-        marker=dict(color=FAT_BAR, line=dict(color="#000000", width=0.2)),
-        opacity=0.95
-    ))
-    fig_comp.update_layout(height=520, barmode="group", xaxis=dict(type="category", tickangle=-15))
-    st.plotly_chart(style_dark(fig_comp), use_container_width=True)
+    st.sidebar.header("Comparativo — Forecast/Faturado")
+    meses_comp = st.sidebar.multiselect(
+        "Meses para comparar (FORECAST/FATURADO)",
+        options=month_tags,
+        default=[m for m in ["JAN", "FEV", "MAR"] if m in month_tags] or month_tags[:1]
+    )
 
-    # tabela DIF(FAT-FORE) com termômetro
-    st.markdown("### Tabela — DIF (FAT − FORE)")
+    def sum_months(df_in, prefix, months_selected, out_col):
+        if df_in.empty or "LINHA" not in df_in.columns:
+            return pd.DataFrame(columns=["LINHA", out_col])
 
-    view2 = comp[["LINHA", "FORECAST", "FATURADO", "DIF (FAT − FORE)"]].copy()
-    view2["FORECAST"] = view2["FORECAST"].round(0).astype("Int64")
-    view2["FATURADO"] = view2["FATURADO"].round(0).astype("Int64")
-    view2["DIF (FAT − FORE)"] = view2["DIF (FAT − FORE)"].round(0).astype("Int64")
+        work = df_in.copy()
+        work["LINHA"] = work["LINHA"].astype(str).str.strip()
 
-    def thermo_cell(v):
-        try:
-            vv = float(v)
-        except:
-            vv = 0.0
-        if vv >= 0:
-            return "🟩 ↑"
-        return "🟥 ↓"
+        cols_to_sum = []
+        for c in work.columns:
+            cu = c.upper().replace(" ", "")
+            if cu.startswith(prefix):
+                tag = extract_month_tag(c)
+                if tag in months_selected:
+                    cols_to_sum.append(c)
 
-    view2["TERMÔMETRO"] = view2["DIF (FAT − FORE)"].apply(thermo_cell)
+        if not cols_to_sum:
+            return pd.DataFrame(columns=["LINHA", out_col])
 
-    def style_diff_fat(s):
-        # pintar a coluna de diferença
-        styles = []
-        for v in s:
+        for c in cols_to_sum:
+            work[c] = to_number(work[c])
+
+        out = work.groupby("LINHA", as_index=False)[cols_to_sum].sum(numeric_only=True)
+        out[out_col] = out[cols_to_sum].sum(axis=1)
+        return out[["LINHA", out_col]]
+
+    forecast_sum = sum_months(df_forecast, "FOR.", meses_comp, "FORECAST") if (not df_forecast.empty and "LINHA" in df_forecast.columns) else pd.DataFrame(columns=["LINHA","FORECAST"])
+    faturado_sum = sum_months(df_faturado, "FAT.", meses_comp, "FATURADO") if (not df_faturado.empty and "LINHA" in df_faturado.columns) else pd.DataFrame(columns=["LINHA","FATURADO"])
+
+    comp = produzido.merge(forecast_sum, on="LINHA", how="outer").merge(faturado_sum, on="LINHA", how="outer")
+    comp["PRODUZIDO"] = pd.to_numeric(comp.get("PRODUZIDO", 0), errors="coerce").fillna(0)
+    comp["FORECAST"] = pd.to_numeric(comp.get("FORECAST", 0), errors="coerce").fillna(0)
+    comp["FATURADO"] = pd.to_numeric(comp.get("FATURADO", 0), errors="coerce").fillna(0)
+
+    # manter só linhas selecionadas no filtro do app
+    comp = comp[comp["LINHA"].isin(linha_sel)].copy()
+
+    comp["DIF (PROD − FORE)"] = comp["PRODUZIDO"] - comp["FORECAST"]
+    comp["DIF (FAT − FORE)"] = comp["FATURADO"] - comp["FORECAST"]
+    comp = comp.sort_values("FORECAST", ascending=False)
+
+    if comp.empty:
+        st.info("Sem dados suficientes para montar o comparativo.")
+    else:
+        fig_comp = go.Figure()
+        fig_comp.add_trace(go.Bar(
+            x=comp["LINHA"], y=comp["FORECAST"],
+            name="Forecast",
+            marker=dict(color=FORE_BAR, line=dict(color="#000000", width=0.2)),
+            opacity=0.95
+        ))
+        fig_comp.add_trace(go.Bar(
+            x=comp["LINHA"], y=comp["PRODUZIDO"],
+            name="Produzido",
+            marker=dict(color=ORANGE_BAR_DARK, line=dict(color="#000000", width=0.2)),
+            opacity=0.95
+        ))
+        fig_comp.add_trace(go.Bar(
+            x=comp["LINHA"], y=comp["FATURADO"],
+            name="Faturado",
+            marker=dict(color=FAT_BAR, line=dict(color="#000000", width=0.2)),
+            opacity=0.95
+        ))
+        fig_comp.update_layout(height=520, barmode="group", xaxis=dict(type="category", tickangle=-15))
+        st.plotly_chart(style_dark(fig_comp), use_container_width=True)
+
+        # Tabela DIF(FAT-FORE) com termômetro
+        st.markdown("### Tabela — DIF (FAT − FORE)")
+        view2 = comp[["LINHA", "FORECAST", "FATURADO", "DIF (FAT − FORE)"]].copy()
+        view2["FORECAST"] = view2["FORECAST"].round(0).astype("Int64")
+        view2["FATURADO"] = view2["FATURADO"].round(0).astype("Int64")
+        view2["DIF (FAT − FORE)"] = view2["DIF (FAT − FORE)"].round(0).astype("Int64")
+
+        def thermo_cell(v):
             try:
                 vv = float(v)
             except:
                 vv = 0.0
-            styles.append(f"background-color:{GREEN}; color:{WHITE}; font-weight:700;" if vv >= 0 else f"background-color:{RED}; color:{WHITE}; font-weight:700;")
-        return styles
+            return "🟩 ↑" if vv >= 0 else "🟥 ↓"
 
-    sty = (
-        view2.style
-        .apply(style_diff_fat, subset=["DIF (FAT − FORE)"])
-        .set_table_styles([
-            {"selector": "th", "props": [("background-color", BG), ("color", WHITE), ("font-weight", "700")]},
-            {"selector": "td", "props": [("background-color", BG), ("color", WHITE)]},
-            {"selector": "table", "props": [("background-color", BG), ("color", WHITE)]},
-        ])
-    )
-    st.dataframe(sty, use_container_width=True)
+        view2["TERMÔMETRO"] = view2["DIF (FAT − FORE)"].apply(thermo_cell)
+
+        def style_diff_fat(s):
+            styles = []
+            for v in s:
+                try:
+                    vv = float(v)
+                except:
+                    vv = 0.0
+                styles.append(
+                    f"background-color:{GREEN}; color:{WHITE}; font-weight:700;"
+                    if vv >= 0 else
+                    f"background-color:{RED}; color:{WHITE}; font-weight:700;"
+                )
+            return styles
+
+        sty = (
+            view2.style
+            .apply(style_diff_fat, subset=["DIF (FAT − FORE)"])
+            .set_table_styles([
+                {"selector": "th", "props": [("background-color", BG), ("color", WHITE), ("font-weight", "700")]},
+                {"selector": "td", "props": [("background-color", BG), ("color", WHITE)]},
+                {"selector": "table", "props": [("background-color", BG), ("color", WHITE)]},
+            ])
+        )
+        st.dataframe(sty, use_container_width=True)
