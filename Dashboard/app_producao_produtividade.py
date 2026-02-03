@@ -617,15 +617,17 @@ st.dataframe(res, use_container_width=True)
 # =====================================================================
 # 4) BLOCO — FORECAST x PRODUÇÃO PROJETADA — JAN/FEV/MAR + RANKING (FIX)
 # =====================================================================
+# 4) BLOCO — FORECAST x PRODUZIDO (NO PERÍODO) + RANKING  (FIX DEFINITIVO)
+# =====================================================================
 st.divider()
-st.markdown("## FORECAST x PRODUÇÃO PROJETADA — JAN / FEV / MAR")
-st.caption("Comparativo por Linha: Forecast x Produção Projetada (tendência por dias úteis). Inclui ranking.")
+st.markdown(f"## FORECAST x PRODUZIDO — {mes_sel}")
+st.caption("Comparativo por Linha: Forecast do mês x PRODUZIDO (soma da Produção no período filtrado).")
 
 def normalize_cols(cols):
     return [str(c).strip().upper() for c in cols]
 
 def find_forecast_sheet(path: Path):
-    """Procura uma aba provável de forecast no mesmo Excel (se existir)."""
+    """Procura uma aba provável de forecast no mesmo Excel/arquivo."""
     try:
         xls = pd.ExcelFile(path)
         for sh in xls.sheet_names:
@@ -642,10 +644,10 @@ def find_forecast_sheet(path: Path):
         pass
     return None
 
-def load_forecast_from_df(df_fc: pd.DataFrame, base_year: int) -> pd.DataFrame:
+def load_forecast_from_df(df_fc: pd.DataFrame, year_base: int) -> pd.DataFrame:
     """
-    Padroniza o forecast para formato longo: LINHA, MES_START, FORECAST.
-    Aceita colunas como: FOR. JAN / FOR. FEV / FOR. MAR etc.
+    Retorna forecast longo: LINHA, MES_START, FORECAST.
+    Aceita colunas: FOR. JAN / FOR. FEV / FOR. MAR ...
     """
     df_fc = df_fc.copy()
     df_fc.columns = normalize_cols(df_fc.columns)
@@ -653,11 +655,19 @@ def load_forecast_from_df(df_fc: pd.DataFrame, base_year: int) -> pd.DataFrame:
     if "LINHA" not in df_fc.columns:
         return pd.DataFrame()
 
-    # mapa mês -> número
     month_map = {
         "JAN": 1, "JANEIRO": 1,
         "FEV": 2, "FEVEREIRO": 2,
         "MAR": 3, "MARCO": 3, "MARÇO": 3,
+        "ABR": 4, "ABRIL": 4,
+        "MAI": 5, "MAIO": 5,
+        "JUN": 6, "JUNHO": 6,
+        "JUL": 7, "JULHO": 7,
+        "AGO": 8, "AGOSTO": 8,
+        "SET": 9, "SETEMBRO": 9,
+        "OUT": 10, "OUTUBRO": 10,
+        "NOV": 11, "NOVEMBRO": 11,
+        "DEZ": 12, "DEZEMBRO": 12,
     }
 
     fc_cols = []
@@ -677,16 +687,17 @@ def load_forecast_from_df(df_fc: pd.DataFrame, base_year: int) -> pd.DataFrame:
 
         for c in fc_cols:
             cu = str(c).upper().replace("Ç", "C")
-            tok = None
-            for k in month_map.keys():
+            mon = None
+            for k in month_map:
                 if k in cu:
-                    tok = k
+                    mon = k
                     break
-            if not tok:
+            if not mon:
                 continue
 
-            mes_num = month_map[tok]
-            mes_start = pd.Timestamp(year=base_year, month=mes_num, day=1)
+            mes_num = month_map[mon]
+            mes_start = pd.Timestamp(year=year_base, month=mes_num, day=1)
+
             val = r.get(c, np.nan)
             val = to_number(pd.Series([val])).iloc[0]
             if pd.isna(val):
@@ -698,27 +709,37 @@ def load_forecast_from_df(df_fc: pd.DataFrame, base_year: int) -> pd.DataFrame:
     if out.empty:
         return out
 
-    out = out.groupby(["LINHA", "MES_START"], as_index=False)["FORECAST"].sum()
-    return out
+    return out.groupby(["LINHA", "MES_START"], as_index=False)["FORECAST"].sum()
 
 # --------------------------
-# Carregar forecast (auto ou upload)
+# 4.1) Produzido no período (SOMA PRODUÇÃO dentro do df_f)
+# --------------------------
+# df_f já é o dataset FILTRADO (mês, linha, período)
+produzido = (
+    df_f.groupby("LINHA", as_index=False)
+        .agg(PRODUZIDO=("PRODUÇÃO", "sum"))
+)
+
+# garante que todas as linhas selecionadas aparecem (mesmo se 0)
+all_lines = pd.DataFrame({"LINHA": linha_sel})
+produzido = all_lines.merge(produzido, on="LINHA", how="left")
+produzido["PRODUZIDO"] = pd.to_numeric(produzido["PRODUZIDO"], errors="coerce").fillna(0)
+
+# --------------------------
+# 4.2) Carregar forecast (mesmo Excel ou upload)
 # --------------------------
 st.sidebar.header("Forecast — Comparativo")
 modo_fc = st.sidebar.radio("Fonte do Forecast", ["Procurar no mesmo Excel", "Enviar arquivo Forecast"], index=0)
 
 df_forecast_long = pd.DataFrame()
-
-# ano base = ano do último mês do seu histórico (dataset)
-# (mantém coerente com seu banco)
-base_year = int(pd.Timestamp(last_month).year)
+year_base = int(pd.Timestamp(df["DATA"].max()).year) if "DATA" in df.columns else date.today().year
 
 if modo_fc == "Procurar no mesmo Excel":
     sh = find_forecast_sheet(excel_path)
     if sh:
         try:
             df_fc = pd.read_excel(excel_path, sheet_name=sh)
-            df_forecast_long = load_forecast_from_df(df_fc, base_year=base_year)
+            df_forecast_long = load_forecast_from_df(df_fc, year_base=year_base)
             st.sidebar.success(f"Forecast encontrado na aba: {sh}")
         except:
             st.sidebar.error("Não consegui ler a aba de Forecast.")
@@ -732,134 +753,123 @@ else:
                 df_fc = pd.read_csv(up)
             else:
                 df_fc = pd.read_excel(up)
-            df_forecast_long = load_forecast_from_df(df_fc, base_year=base_year)
+            df_forecast_long = load_forecast_from_df(df_fc, year_base=year_base)
             st.sidebar.success("Forecast carregado do arquivo enviado.")
         except:
             st.sidebar.error("Não consegui ler esse arquivo de Forecast.")
 
 # --------------------------
-# Montar comparação (FIX: projeção calculada do ZERO para meses do forecast)
+# 4.3) Pegar Forecast do MÊS selecionado (mes_sel)
 # --------------------------
 if df_forecast_long.empty:
-    st.info("⚠️ Forecast não carregado. Esse bloco só aparece quando o forecast é encontrado/enviado.")
+    st.info("⚠️ Forecast não carregado. Esse bloco aparece quando o forecast é encontrado/enviado.")
 else:
-    # filtra linhas selecionadas
-    df_forecast_long["LINHA"] = df_forecast_long["LINHA"].astype(str).str.strip()
-    df_forecast_long = df_forecast_long[df_forecast_long["LINHA"].isin(linha_sel)].copy()
+    # converte mes_sel (texto) -> mês número
+    map_mes = {
+        "JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "MARCO": 3,
+        "ABRIL": 4, "MAIO": 5, "JUNHO": 6, "JULHO": 7,
+        "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12
+    }
+    mes_num = map_mes.get(str(mes_sel).upper().strip(), None)
+    if mes_num is None:
+        st.warning("Não consegui identificar o mês selecionado para cruzar com o Forecast.")
+    else:
+        mes_start = pd.Timestamp(year=year_base, month=mes_num, day=1)
 
-    # meses disponíveis no forecast (normalmente JAN/FEV/MAR do ano base)
-    meses_lbl = sorted(df_forecast_long["MES_START"].dropna().unique().tolist())
-    meses_lbl_txt = [pd.Timestamp(m).strftime("%b/%Y").upper() for m in meses_lbl]
+        fc_mes = df_forecast_long.copy()
+        fc_mes["LINHA"] = fc_mes["LINHA"].astype(str).str.strip()
+        fc_mes = fc_mes[(fc_mes["MES_START"] == mes_start) & (fc_mes["LINHA"].isin(linha_sel))].copy()
 
-    mes_view_txt = st.selectbox("Visualizar mês", meses_lbl_txt, index=0 if meses_lbl_txt else 0)
-    mes_view = meses_lbl[meses_lbl_txt.index(mes_view_txt)] if meses_lbl_txt else None
+        # se não tiver forecast do mês, zera
+        if fc_mes.empty:
+            fc_mes = pd.DataFrame({"LINHA": linha_sel, "FORECAST": 0.0})
+        else:
+            fc_mes = fc_mes.groupby("LINHA", as_index=False)["FORECAST"].sum()
 
-    # tendência por linha (já calculada no bloco 3) = TEND_PROD_POR_DU
-    trend_use = trend.copy()
-    trend_use["LINHA"] = trend_use["LINHA"].astype(str).str.strip()
-    trend_use = trend_use[trend_use["LINHA"].isin(linha_sel)].copy()
+        # junta Forecast x Produzido
+        comp = produzido.merge(fc_mes, on="LINHA", how="left")
+        comp["FORECAST"] = pd.to_numeric(comp["FORECAST"], errors="coerce").fillna(0)
 
-    # calcula projeção para cada mês que existe no forecast:
-    # PROJETADO = TEND_PROD_POR_DU * DIAS_UTEIS(mês)
-    months_fc = pd.DataFrame({"MES_START": meses_lbl})
-    months_fc["DIAS_UTEIS"] = months_fc["MES_START"].apply(business_days_in_month)
+        comp["DIF"] = comp["PRODUZIDO"] - comp["FORECAST"]
+        comp["DIF_%"] = np.where(comp["FORECAST"] != 0, (comp["DIF"] / comp["FORECAST"]) * 100, np.nan)
 
-    proj_fc = months_fc.merge(trend_use, how="cross")
-    proj_fc["PROJETADO"] = proj_fc["TEND_PROD_POR_DU"] * proj_fc["DIAS_UTEIS"]
+        comp = comp.sort_values("FORECAST", ascending=False)
 
-    # juntar com forecast
-    fc_month = df_forecast_long.groupby(["LINHA", "MES_START"], as_index=False)["FORECAST"].sum()
-    comp = proj_fc.merge(fc_month, on=["LINHA", "MES_START"], how="left")
+        # --------------------------
+        # GRÁFICO (Forecast x Produzido)
+        # --------------------------
+        st.markdown("### Comparativo por Linha — Forecast x Produzido (no período)")
+        fig_fc = go.Figure()
 
-    comp["FORECAST"] = pd.to_numeric(comp["FORECAST"], errors="coerce").fillna(0)
-    comp["PROJETADO"] = pd.to_numeric(comp["PROJETADO"], errors="coerce").fillna(0)
+        fig_fc.add_trace(go.Bar(
+            x=comp["LINHA"],
+            y=comp["FORECAST"],
+            name="Forecast",
+            marker=dict(color="#5a5a5a", line=dict(color="#000000", width=0.2)),
+            opacity=0.9
+        ))
+        fig_fc.add_trace(go.Bar(
+            x=comp["LINHA"],
+            y=comp["PRODUZIDO"],
+            name="Produzido",
+            marker=dict(color=ORANGE_BAR_DARK, line=dict(color="#000000", width=0.2)),
+            opacity=0.9
+        ))
 
-    comp["DIF"] = comp["PROJETADO"] - comp["FORECAST"]
-    comp["DIF_%"] = np.where(comp["FORECAST"] != 0, (comp["DIF"] / comp["FORECAST"]) * 100, np.nan)
-    comp["MES_TXT"] = pd.to_datetime(comp["MES_START"]).dt.strftime("%b/%Y").str.upper()
+        fig_fc.update_layout(
+            height=460,
+            barmode="group",
+            xaxis=dict(type="category", tickangle=-25, showgrid=False),
+            yaxis=dict(title="Quantidade"),
+        )
+        st.plotly_chart(style_dark(fig_fc), use_container_width=True)
 
-    # filtra mês selecionado
-    comp_m = comp[comp["MES_START"] == pd.Timestamp(mes_view)].copy() if mes_view is not None else comp.copy()
+        # --------------------------
+        # RANKING
+        # --------------------------
+        st.markdown("### Ranking (Produzido − Forecast)")
 
-    # ordena por forecast (ou projetado)
-    comp_m = comp_m.sort_values("FORECAST", ascending=False)
+        rank = comp.copy()
+        rank["FORECAST"] = rank["FORECAST"].round(0)
+        rank["PRODUZIDO"] = rank["PRODUZIDO"].round(0)
+        rank["DIF"] = rank["DIF"].round(0)
+        rank["DIF_%"] = rank["DIF_%"].round(1)
 
-    # =========================
-    # GRÁFICO — Forecast x Projetado (por linha)
-    # =========================
-    st.markdown("### Comparativo por Linha — Forecast x Projetado")
-    fig_fc = go.Figure()
+        rank = rank.sort_values("DIF", ascending=False)
 
-    fig_fc.add_trace(go.Bar(
-        x=comp_m["LINHA"],
-        y=comp_m["FORECAST"],
-        name="Forecast",
-        marker=dict(color="#5a5a5a", line=dict(color="#000000", width=0.2)),
-        opacity=0.9
-    ))
-    fig_fc.add_trace(go.Bar(
-        x=comp_m["LINHA"],
-        y=comp_m["PROJETADO"],
-        name="Projetado",
-        marker=dict(color=ORANGE_BAR_DARK, line=dict(color="#000000", width=0.2)),
-        opacity=0.9
-    ))
+        def color_diff(v):
+            try:
+                v = float(v)
+            except:
+                return ""
+            return f"color: {WHITE}; background-color: {GREEN if v >= 0 else RED}; font-weight:700;"
 
-    fig_fc.update_layout(
-        height=460,
-        barmode="group",
-        xaxis=dict(type="category", tickangle=-25, showgrid=False),
-        yaxis=dict(title="Quantidade"),
-    )
-    st.plotly_chart(style_dark(fig_fc), use_container_width=True)
+        show = rank[["LINHA", "FORECAST", "PRODUZIDO", "DIF", "DIF_%"]].rename(columns={
+            "LINHA": "Linha",
+            "FORECAST": "Forecast",
+            "PRODUZIDO": "Produzido",
+            "DIF": "Produzido − Forecast",
+            "DIF_%": "Dif %"
+        })
 
-    # =========================
-    # RANKING — Projetado − Forecast
-    # =========================
-    st.markdown("### Ranking (Projetado − Forecast)")
+        st.dataframe(
+            show.style.applymap(color_diff, subset=["Produzido − Forecast"]).format({
+                "Forecast": "{:,.0f}".format,
+                "Produzido": "{:,.0f}".format,
+                "Produzido − Forecast": "{:,.0f}".format,
+                "Dif %": lambda x: "" if pd.isna(x) else f"{x:.1f}%"
+            }),
+            use_container_width=True
+        )
 
-    rank = comp_m.copy()
-    rank["DIF"] = rank["DIF"].round(0)
-    rank["PROJETADO"] = rank["PROJETADO"].round(0)
-    rank["FORECAST"] = rank["FORECAST"].round(0)
-    rank["DIF_%"] = rank["DIF_%"].round(1)
+        st.markdown("#### Top 5 (melhor) e Top 5 (pior)")
+        top5 = show.sort_values("Produzido − Forecast", ascending=False).head(5)
+        bot5 = show.sort_values("Produzido − Forecast", ascending=True).head(5)
 
-    # maior diferença primeiro
-    rank = rank.sort_values("DIF", ascending=False)
-
-    def color_diff(v):
-        try:
-            v = float(v)
-        except:
-            return ""
-        return f"color: {WHITE}; background-color: {GREEN if v >= 0 else RED}; font-weight:700;"
-
-    show = rank[["LINHA", "FORECAST", "PROJETADO", "DIF", "DIF_%"]].rename(columns={
-        "LINHA": "Linha",
-        "FORECAST": "Forecast",
-        "PROJETADO": "Projetado",
-        "DIF": "Projetado − Forecast",
-        "DIF_%": "Dif %"
-    })
-
-    st.dataframe(
-        show.style.applymap(color_diff, subset=["Projetado − Forecast"]).format({
-            "Forecast": "{:,.0f}".format,
-            "Projetado": "{:,.0f}".format,
-            "Projetado − Forecast": "{:,.0f}".format,
-            "Dif %": lambda x: "" if pd.isna(x) else f"{x:.1f}%"
-        }),
-        use_container_width=True
-    )
-
-    st.markdown("#### Top 5 (melhor) e Top 5 (pior)")
-    top5 = show.head(5)
-    bot5 = show.tail(5).sort_values("Projetado − Forecast")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.caption("Top 5 — acima do forecast")
-        st.dataframe(top5, use_container_width=True, height=220)
-    with c2:
-        st.caption("Top 5 — abaixo do forecast")
-        st.dataframe(bot5, use_container_width=True, height=220)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("Top 5 — acima do forecast")
+            st.dataframe(top5, use_container_width=True, height=220)
+        with c2:
+            st.caption("Top 5 — abaixo do forecast")
+            st.dataframe(bot5, use_container_width=True, height=220)
