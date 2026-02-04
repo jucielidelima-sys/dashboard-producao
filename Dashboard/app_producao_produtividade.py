@@ -746,7 +746,7 @@ else:
         st.plotly_chart(style_dark(fig_comp), use_container_width=True)
 
         # ===== TABELAS DIF =====
-        st.markdown("### Tabelas de Diferença (com termômetro)")
+        st.markdown("### Tabelas de Diferença")
 
         def thermo_cell(v):
             try:
