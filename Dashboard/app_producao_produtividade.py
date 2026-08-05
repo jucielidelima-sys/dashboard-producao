@@ -62,7 +62,7 @@ def login():
     with c2:
         logo_path = Path(__file__).parent / LOGO
         if logo_path.exists():
-            st.image(str(logo_path), use_container_width=True)
+            st.image(str(logo_path), use_column_width=True)
 
         st.caption("Acesso restrito")
         senha = st.text_input("Senha", type="password")
